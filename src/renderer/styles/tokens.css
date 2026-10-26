@@ -1,0 +1,374 @@
+/* ============================================================================
+   Purple IDE — design tokens
+
+   This is the only file that defines color. shell.css and app.css consume the
+   semantic variables below; neither declares a palette of its own.
+   ========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   Theme-independent layout, type and motion tokens
+   ------------------------------------------------------------------------ */
+:root {
+  --wb-titlebar-height: 38px;
+  --wb-activity-width: 48px;
+  --wb-status-height: 22px;
+  --workbench-title-bar-height: var(--wb-titlebar-height);
+  --workbench-activity-bar-width: var(--wb-activity-width);
+  --workbench-status-bar-height: var(--wb-status-height);
+  --title-bar-height: var(--wb-titlebar-height);
+  --activity-bar-width: var(--wb-activity-width);
+  --status-bar-height: var(--wb-status-height);
+
+  --sidebar-min-width: 240px;
+  --sidebar-max-width: 480px;
+  --sidebar-default-width: 288px;
+  --ai-panel-min-width: 320px;
+  --ai-panel-max-width: 720px;
+  --ai-panel-default-width: 400px;
+  --panel-min-height: 120px;
+  --panel-max-height: 500px;
+  --panel-default-height: 240px;
+  --sash-size: 4px;
+
+  --wb-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --wb-mono: "JetBrains Mono", "SFMono-Regular", "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-ui: var(--wb-ui);
+  --font-mono: var(--wb-mono);
+  --font-size-ui: 13px;
+  --font-size-mono: 13px;
+  --line-height-ui: 1.4;
+  --line-height-mono: 1.5;
+
+  --spacing-unit: 4px;
+  --radius-control: 4px;
+  --radius-sm: 3px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-card: 8px;
+
+  --transition: 120ms ease;
+  --transition-fast: 80ms ease-out;
+  --transition-normal: 120ms ease-out;
+  --transition-slow: 200ms ease-out;
+  --am-ease: cubic-bezier(.2, .8, .2, 1);
+  --am-glow: 0 0 12px rgba(139, 92, 246, 0.35);
+  --am-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --am-shadow-md: 0 4px 14px rgba(0, 0, 0, 0.3);
+  --am-shadow-lg: 0 12px 36px rgba(0, 0, 0, 0.45);
+  --shadow-sm: var(--am-shadow-sm);
+  --shadow-md: 0 4px 8px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --wb-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+}
+
+/* ---------------------------------------------------------------------------
+   Theme palettes. Purple Dark is also the pre-paint default on :root.
+   ------------------------------------------------------------------------ */
+:root,
+.theme-purple-dark {
+  color-scheme: dark;
+  --wb-titlebar: #08060f;
+  --wb-activity: #0a0714;
+  --wb-sidebar: #0f0b1a;
+  --wb-editor: #0d0a16;
+  --wb-tabs: #0b0814;
+  --wb-tab-active: #0d0a16;
+  --wb-panel: #0b0814;
+  --wb-panel-header: #0f0b1a;
+  --wb-status: #08060f;
+  --wb-ai: #0f0b1a;
+  --wb-input: #151121;
+  --wb-border: #241e36;
+  --wb-border-strong: #3b3158;
+  --wb-border-soft: rgba(255, 255, 255, 0.055);
+  --wb-text: #e9e6f4;
+  --wb-text-dim: #a8a3c2;
+  --wb-text-muted: #736d92;
+  --wb-accent: #8b5cf6;
+  --wb-accent-hover: #a78bfa;
+  --wb-accent-soft: rgba(139, 92, 246, 0.16);
+  --wb-hover: rgba(255, 255, 255, 0.055);
+  --wb-active: rgba(139, 92, 246, 0.14);
+  --wb-selection: #2a2244;
+  --wb-badge: #2a2244;
+  --wb-badge-text: #f1edff;
+  --wb-success: #4ade80;
+  --wb-warning: #fbbf24;
+  --wb-error: #fb7185;
+  --wb-info: #60a5fa;
+  --wb-status-hover: rgba(255, 255, 255, 0.08);
+}
+
+.theme-dark-modern {
+  color-scheme: dark;
+  --wb-titlebar: #1f1f1f;
+  --wb-activity: #181818;
+  --wb-sidebar: #202020;
+  --wb-editor: #1e1e1e;
+  --wb-tabs: #181818;
+  --wb-tab-active: #1e1e1e;
+  --wb-panel: #181818;
+  --wb-panel-header: #202020;
+  --wb-status: #181818;
+  --wb-ai: #202020;
+  --wb-input: #2b2b2b;
+  --wb-border: #303030;
+  --wb-border-strong: #454545;
+  --wb-border-soft: rgba(255, 255, 255, 0.065);
+  --wb-text: #e6e6e6;
+  --wb-text-dim: #b5b5b5;
+  --wb-text-muted: #8a8a8a;
+  --wb-accent: #8b5cf6;
+  --wb-accent-hover: #a78bfa;
+  --wb-accent-soft: rgba(139, 92, 246, 0.18);
+  --wb-hover: rgba(255, 255, 255, 0.065);
+  --wb-active: rgba(139, 92, 246, 0.18);
+  --wb-selection: #2b2440;
+  --wb-badge: #37305a;
+  --wb-badge-text: #f1edff;
+  --wb-status-hover: rgba(255, 255, 255, 0.1);
+}
+
+.theme-light-modern {
+  color-scheme: light;
+  --wb-titlebar: #ece9f3;
+  --wb-activity: #f1eef7;
+  --wb-sidebar: #f7f5fb;
+  --wb-editor: #ffffff;
+  --wb-tabs: #f1eef7;
+  --wb-tab-active: #ffffff;
+  --wb-panel: #f8f6fb;
+  --wb-panel-header: #f1eef7;
+  --wb-status: #e9e4f3;
+  --wb-ai: #f8f6fb;
+  --wb-input: #ffffff;
+  --wb-border: #dfdae9;
+  --wb-border-strong: #c9c1da;
+  --wb-border-soft: rgba(0, 0, 0, 0.07);
+  --wb-text: #241f33;
+  --wb-text-dim: #514a68;
+  --wb-text-muted: #817a97;
+  --wb-accent: #7c3aed;
+  --wb-accent-hover: #6d28d9;
+  --wb-accent-soft: rgba(124, 58, 237, 0.11);
+  --wb-hover: rgba(32, 20, 60, 0.055);
+  --wb-active: rgba(124, 58, 237, 0.12);
+  --wb-selection: #ddd4ff;
+  --wb-badge: #e7e0fb;
+  --wb-badge-text: #3b246c;
+  --wb-success: #15803d;
+  --wb-warning: #a16207;
+  --wb-error: #be123c;
+  --wb-info: #1d4ed8;
+  --wb-status-hover: rgba(32, 20, 60, 0.07);
+}
+
+.theme-high-contrast {
+  color-scheme: dark;
+  --wb-titlebar: #000000;
+  --wb-activity: #000000;
+  --wb-sidebar: #000000;
+  --wb-editor: #000000;
+  --wb-tabs: #000000;
+  --wb-tab-active: #000000;
+  --wb-panel: #000000;
+  --wb-panel-header: #000000;
+  --wb-status: #000000;
+  --wb-ai: #000000;
+  --wb-input: #111111;
+  --wb-border: #6b6b6b;
+  --wb-border-strong: #ffffff;
+  --wb-border-soft: #3a3a3a;
+  --wb-text: #ffffff;
+  --wb-text-dim: #e5e5e5;
+  --wb-text-muted: #c8c8c8;
+  --wb-accent: #c4b5fd;
+  --wb-accent-hover: #ddd6fe;
+  --wb-accent-soft: rgba(196, 181, 253, 0.22);
+  --wb-hover: rgba(255, 255, 255, 0.16);
+  --wb-active: rgba(196, 181, 253, 0.24);
+  --wb-selection: #4b3f7a;
+  --wb-badge: #ffffff;
+  --wb-badge-text: #000000;
+  --wb-success: #6ee7a0;
+  --wb-warning: #fde047;
+  --wb-error: #fda4af;
+  --wb-status-hover: rgba(255, 255, 255, 0.2);
+}
+
+/* ---------------------------------------------------------------------------
+   Legacy semantic names used by older components (app.css). Declared once so
+   every theme flows through automatically.
+   ------------------------------------------------------------------------ */
+:root {
+  --sideBar-background: var(--wb-sidebar);
+  --sideBar-foreground: var(--wb-text-dim);
+  --sideBar-border: var(--wb-border);
+  --activitybar-foreground: var(--wb-text-muted);
+  --activityBar-activeForeground: var(--wb-text);
+  --activityBarBadge-background: var(--wb-accent);
+  --activityBarBadge-foreground: #ffffff;
+  --editor-background: var(--wb-editor);
+  --editor-foreground: var(--wb-text);
+  --editor-border: var(--wb-border);
+  --panel-background: var(--wb-panel);
+  --panel-border: var(--wb-border);
+  --panel-header-bg: var(--wb-panel-header);
+  --statusbar-bg: var(--wb-status);
+  --statusbar-border: var(--wb-border);
+  --statusbar-text: var(--wb-text-dim);
+  --statusbar-hover: var(--wb-status-hover);
+  --titlebar-bg: var(--wb-titlebar);
+  --titlebar-text: var(--wb-text);
+  --activitybar-bg: var(--wb-activity);
+  --activitybar-hover: var(--wb-hover);
+  --activitybar-active: var(--wb-text);
+  --activitybar-indicator: var(--wb-accent);
+  --dropdown-background: var(--wb-panel);
+  --dropdown-border: var(--wb-border-strong);
+  --dropdown-foreground: var(--wb-text);
+  --button-background: var(--wb-accent);
+  --button-bg: var(--wb-accent);
+  --button-hover: var(--wb-accent-hover);
+  --button-hover-bg: var(--wb-accent-hover);
+  --button-text: #ffffff;
+  --focusBorder: var(--wb-accent);
+  --list-activeSelectionBackground: var(--wb-active);
+  --list-activeSelectionForeground: var(--wb-text);
+  --list-hoverBackground: var(--wb-hover);
+  --success-foreground: var(--wb-success);
+  --warning-foreground: var(--wb-warning);
+  --error-foreground: var(--wb-error);
+
+  --bg-primary: var(--wb-editor);
+  --bg-secondary: var(--wb-sidebar);
+  --bg-tertiary: var(--wb-panel);
+  --bg-hover: var(--wb-hover);
+  --bg-active: var(--wb-active);
+  --bg-selection: var(--wb-selection);
+  --bg-input: var(--wb-input);
+  --bg-badge: var(--wb-badge);
+  --text-primary: var(--wb-text);
+  --text-secondary: var(--wb-text-dim);
+  --text-muted: var(--wb-text-muted);
+  --text-link: var(--wb-accent-hover);
+  --accent: var(--wb-accent);
+  --accent-hover: var(--wb-accent-hover);
+  --accent-soft: var(--wb-accent-soft);
+  --accent-2: var(--wb-accent);
+  --accent-3: var(--wb-info);
+  --wb-accent-cyan: #4dd8ff;
+  --border: var(--wb-border);
+  --border-light: var(--wb-border-soft);
+  --border-focus: var(--wb-accent);
+  --tab-active-bg: var(--wb-tab-active);
+  --tab-inactive-bg: var(--wb-tabs);
+  --tab-border: var(--wb-border);
+  --menu-bg: var(--wb-panel);
+  --menu-border: var(--wb-border-strong);
+  --menu-hover: var(--wb-active);
+  --menu-hover-text: var(--wb-text);
+  --scrollbar-thumb: rgba(139, 92, 246, 0.24);
+  --scrollbar-thumb-hover: rgba(139, 92, 246, 0.42);
+  --badge-bg: var(--wb-badge);
+  --badge-text: var(--wb-badge-text);
+  --input-border: var(--wb-border);
+  --input-border-focus: var(--wb-accent);
+  --input-placeholder: var(--wb-text-muted);
+  --error-bg: rgba(251, 113, 133, 0.12);
+  --error-text: var(--wb-error);
+  --success-text: var(--wb-success);
+  --warning-text: var(--wb-warning);
+  --quickopen-bg: var(--wb-panel);
+  --quickopen-border: var(--wb-border-strong);
+  --overlay-bg: rgba(4, 2, 10, 0.62);
+  --list-active: var(--wb-active);
+  --list-active-text: var(--wb-text);
+  --list-hover: var(--wb-hover);
+}
+
+/* ---------------------------------------------------------------------------
+   Global resets and base styles
+   ------------------------------------------------------------------------ */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
+  line-height: var(--line-height-ui);
+  color: var(--wb-text);
+  background: var(--wb-editor);
+  overflow: hidden;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+}
+
+:focus-visible {
+  outline: 2px solid var(--wb-accent);
+  outline-offset: 1px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+::selection {
+  background: var(--wb-selection);
+  color: var(--wb-text);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 5px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -1,0 +1,2 @@
+import electron from 'electron';
+const { app, BrowserWindow, Menu, dialog, ipcMain, safeStorage } = electron;

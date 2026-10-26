@@ -1,0 +1,5 @@
+/* Single stylesheet entry point. Order matters: tokens define the contract,
+   legacy component styles consume it, the shell refines workbench regions. */
+@import './tokens.css';
+@import './app.css';
+@import './shell.css';

@@ -1,0 +1,66 @@
+Purple IDE - Third Party Notices
+=================================
+
+This application includes the following third-party components:
+
+1. Codicons
+   - Source: https://github.com/microsoft/vscode-codicons
+   - License: CC BY 4.0 (https://creativecommons.org/licenses/by/4.0/)
+   - Used for: Iconography throughout the application
+   - Attribution: "Codicons" by Microsoft Corporation, used under CC BY 4.0
+
+2. Monaco Editor
+   - Source: https://github.com/microsoft/monaco-editor
+   - License: MIT License
+   - Used for: Code editing component
+
+3. xterm.js
+   - Source: https://github.com/xtermjs/xterm.js
+   - License: MIT License
+   - Used for: Terminal emulation
+
+4. React
+   - Source: https://github.com/facebook/react
+   - License: MIT License
+
+5. React DOM
+   - Source: https://github.com/facebook/react
+   - License: MIT License
+
+6. Vite
+   - Source: https://github.com/vitejs/vite
+   - License: MIT License
+
+7. Electron
+   - Source: https://github.com/electron/electron
+   - License: MIT License
+
+8. node-pty
+   - Source: https://github.com/microsoft/node-pty
+   - License: MIT License
+
+9. TypeScript
+   - Source: https://github.com/microsoft/TypeScript
+   - License: Apache License 2.0
+
+10. vite-plugin-react
+    - Source: https://github.com/vitejs/vite-plugin-react
+    - License: MIT License
+
+11. @xterm/addon-fit
+    - Source: https://github.com/xtermjs/xterm.js
+    - License: MIT License
+
+12. @xterm/addon-web-links
+    - Source: https://github.com/xtermjs/xterm.js
+    - License: MIT License
+
+13. js-tiktoken
+    - Source: https://github.com/dqbd/tiktoken
+    - License: MIT License
+
+14. electron-builder
+    - Source: https://github.com/electron-userland/electron-builder
+    - License: MIT License
+
+All licenses are compatible with the MIT License of this project.

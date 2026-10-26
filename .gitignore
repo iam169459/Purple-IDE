@@ -1,0 +1,12 @@
+node_modules/
+dist/
+build/
+out/
+.DS_Store
+.vscode/
+.env
+.env.local
+*.log
+
+# Machine-local agent settings (contains API keys)
+.claude/settings.local.json

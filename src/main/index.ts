@@ -1,0 +1,1479 @@
+import { app, BrowserWindow, Menu, dialog, ipcMain, shell } from 'electron';
+import path from 'path';
+import fs from 'fs';
+import os from 'os';
+import { spawn } from 'child_process';
+import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
+
+import { AdvancedIPCHandler } from './advancedIPCHandler.js';
+import { getCommand } from '../shared/commands.js';
+import { executeTool } from './toolExecutor.js';
+import { agentOrchestrator } from './agents/orchestrator.js';
+import { modelRouter } from './agents/modelRouter.js';
+import { memoryManager } from './agents/memoryManager.js';
+import electronUpdater from 'electron-updater';
+const autoUpdater = electronUpdater.autoUpdater;
+
+const require = createRequire(import.meta.url);
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Ensure the app shows as "Purple IDE" in the menu bar, Dock, and About.
+// Packaged builds get CFBundleName from electron-builder's productName; these
+// calls keep dev builds and the About panel consistent.
+app.setName('Purple IDE');
+app.name = 'Purple IDE';
+
+// ---------------------------------------------------------------------------
+// GitHub auto-updates
+// ---------------------------------------------------------------------------
+//
+// Updates are published to YOUR GitHub repository's releases. Configure it once,
+// either in package.json -> build.publish { provider: "github", owner, repo },
+// or with PURPLE_UPDATE_REPO="owner/repo".
+//
+// Ship a release with a token that can write to that repo:
+//   GH_TOKEN=... npm run dist -- --publish always
+
+interface UpdateRepo { owner: string; repo: string }
+
+let updateRepo: UpdateRepo | null = null;
+let packagedFeed = false;
+let manualUpdateCheck = false;
+
+function resolveUpdateRepo(): UpdateRepo | null {
+  const candidates: string[] = [];
+  const fromEnv = (process.env.PURPLE_UPDATE_REPO || '').trim();
+  if (fromEnv) candidates.push(fromEnv);
+  try {
+    const pkgPath = path.join(app.getAppPath(), 'package.json');
+    const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
+    const publish = pkg?.build?.publish;
+    const config = Array.isArray(publish) ? publish[0] : publish;
+    if (config?.owner && config?.repo) candidates.push(`${config.owner}/${config.repo}`);
+  } catch {}
+  for (const candidate of candidates) {
+    const [owner, repo] = candidate.split('/').map(part => part.trim());
+    if (!owner || !repo) continue;
+    // Ignore the placeholder until the user points this at their own repo.
+    if (/^your[-_]?(github[-_]?)?(user(name)?|repo)$/i.test(owner)) continue;
+    return { owner, repo };
+  }
+  return null;
+}
+
+function updatesSupported(): boolean {
+  return app.isPackaged && (updateRepo !== null || packagedFeed);
+}
+
+function quitAndReinstall() {
+  setImmediate(() => autoUpdater.quitAndInstall());
+}
+
+function configureAutoUpdater() {
+  updateRepo = resolveUpdateRepo();
+  // electron-builder writes app-update.yml into the packaged resources from
+  // build.publish; electron-updater reads it automatically when no feed is set.
+  packagedFeed = app.isPackaged && fs.existsSync(path.join(process.resourcesPath, 'app-update.yml'));
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  if (updateRepo) {
+    autoUpdater.setFeedURL({ provider: 'github', owner: updateRepo.owner, repo: updateRepo.repo });
+  }
+}
+
+async function checkForUpdates(manual: boolean): Promise<{ success: boolean; version?: string | null; error?: string }> {
+  if (!app.isPackaged) {
+    if (manual) {
+      await dialog.showMessageBox({
+        type: 'info',
+        title: 'Check for Updates',
+        message: 'Updates are available in installed builds only',
+        detail: `You are running development build ${app.getVersion()}. Package the app (npm run dist) and install it to receive updates from GitHub.`,
+        buttons: ['OK'],
+      });
+    }
+    return { success: false, error: 'Not a packaged build' };
+  }
+  if (!updateRepo && !packagedFeed) {
+    if (manual) {
+      await dialog.showMessageBox({
+        type: 'info',
+        title: 'Check for Updates',
+        message: 'No update repository configured',
+        detail: 'Set build.publish in package.json to { "provider": "github", "owner": "<you>", "repo": "<repo>" }, or set PURPLE_UPDATE_REPO="owner/repo", then rebuild.',
+        buttons: ['OK'],
+      });
+    }
+    return { success: false, error: 'No update repository configured' };
+  }
+  manualUpdateCheck = manual;
+  try {
+    const result = await autoUpdater.checkForUpdates();
+    return { success: true, version: result?.updateInfo?.version ?? null };
+  } catch (error) {
+    manualUpdateCheck = false;
+    console.error('Check for update failed:', error);
+    return { success: false, error: (error as Error).message };
+  }
+}
+
+autoUpdater.on('checking-for-update', () => {
+  console.log('Checking for update...');
+});
+
+autoUpdater.on('update-available', (info: { version?: string }) => {
+  console.log('Update available:', info.version);
+  if (!manualUpdateCheck) return;
+  void dialog.showMessageBox({
+    type: 'info',
+    title: 'Update Available',
+    message: `Purple IDE ${info.version ?? ''} is available`,
+    detail: 'Downloading in the background. You will be prompted to restart when it is ready.',
+    buttons: ['OK'],
+  });
+});
+
+autoUpdater.on('update-not-available', () => {
+  console.log('Update not available.');
+  if (!manualUpdateCheck) return;
+  manualUpdateCheck = false;
+  void dialog.showMessageBox({
+    type: 'info',
+    title: 'Check for Updates',
+    message: "You're up to date",
+    detail: `Purple IDE ${app.getVersion()} is the latest version.`,
+    buttons: ['OK'],
+  });
+});
+
+autoUpdater.on('download-progress', (progress: { percent?: number }) => {
+  console.log(`Update download: ${Math.round(progress.percent ?? 0)}%`);
+});
+
+autoUpdater.on('update-downloaded', (info: { version?: string }) => {
+  console.log('Update downloaded:', info.version);
+  manualUpdateCheck = false;
+  if (!mainWindow) return;
+  void dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: 'Update Ready',
+    message: `Purple IDE ${info.version ?? ''} has been downloaded`,
+    detail: 'Restart now to install it.',
+    buttons: ['Restart and Install', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+  }).then(({ response }) => {
+    if (response === 0) quitAndReinstall();
+  });
+});
+
+autoUpdater.on('error', (err: Error) => {
+  console.error('Update error:', err.message);
+  if (!manualUpdateCheck) return;
+  manualUpdateCheck = false;
+  void dialog.showMessageBox({
+    type: 'error',
+    title: 'Update Error',
+    message: 'Could not check for updates',
+    detail: err.message,
+    buttons: ['OK'],
+  });
+});
+
+ipcMain.handle('check-for-update', () => checkForUpdates(true));
+
+ipcMain.handle('install-update', () => {
+  if (!updatesSupported()) return { success: false, error: 'Updates unavailable' };
+  quitAndReinstall();
+  return { success: true };
+});
+
+ipcMain.handle('get-update-info', () => ({
+  success: true,
+  version: app.getVersion(),
+  enabled: updatesSupported(),
+  repo: updateRepo ? `${updateRepo.owner}/${updateRepo.repo}` : null,
+}));
+
+let mainWindow: BrowserWindow | null = null;
+let workspaceRoot: string | null = null;
+let watcher: fs.FSWatcher | null = null;
+
+const ipcHandler = new AdvancedIPCHandler(ipcMain);
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function send(channel: string, ...args: any[]) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, ...args);
+  }
+}
+
+function getUserDataPath(file: string): string {
+  return path.join(app.getPath('userData'), file);
+}
+
+function readJsonStore<T>(file: string, fallback: T): T {
+  try {
+    const p = getUserDataPath(file);
+    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf-8')) as T;
+  } catch {}
+  return fallback;
+}
+
+function writeJsonStore(file: string, data: unknown) {
+  try {
+    const p = getUserDataPath(file);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf-8');
+  } catch {}
+}
+
+function resolveWorkspacePath(rawPath: string): string {
+  const isAbsolute = path.isAbsolute(rawPath) || rawPath.startsWith('/');
+  return isAbsolute ? rawPath : workspaceRoot ? path.join(workspaceRoot, rawPath) : rawPath;
+}
+
+function isPathSafe(resolved: string): boolean {
+  if (!workspaceRoot) return true;
+  try {
+    const realRoot = path.resolve(workspaceRoot);
+    const realPath = path.resolve(resolved);
+    return realPath.startsWith(realRoot + path.sep) || realPath === realRoot;
+  } catch {
+    return false;
+  }
+}
+
+function listEntries(dirPath: string) {
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  return entries.map(e => ({
+    name: e.name,
+    path: path.join(dirPath, e.name),
+    isDirectory: e.isDirectory(),
+  }));
+}
+
+function runShellCommand(command: string, cwd: string, timeoutMs = 30000): Promise<{
+  success: boolean; stdout: string; stderr: string; exitCode: number | null; error?: string;
+}> {
+  return new Promise(resolve => {
+    const isWin = process.platform === 'win32';
+    const proc = spawn(isWin ? 'cmd' : 'bash', [isWin ? '/c' : '-c', command], {
+      cwd,
+      shell: false,
+      env: { ...process.env, FORCE_COLOR: '0' } as Record<string, string>,
+    });
+    let stdout = '', stderr = '';
+    const timer = setTimeout(() => {
+      proc.kill();
+      resolve({ success: true, stdout, stderr, exitCode: null, error: 'Timed out' });
+    }, timeoutMs);
+    proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+    proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+    proc.on('close', code => {
+      clearTimeout(timer);
+      resolve({ success: true, stdout, stderr, exitCode: code });
+    });
+    proc.on('error', err => {
+      clearTimeout(timer);
+      resolve({ success: false, stdout, stderr, exitCode: null, error: err.message });
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI-compatible chat completion URL resolution
+// ---------------------------------------------------------------------------
+
+function resolveChatUrl(endpoint: string): string {
+  const base = (endpoint || '').replace(/\/+$/, '');
+  if (!base) throw new Error('Empty endpoint');
+  if (/\/chat\/completions$/.test(base)) return base;
+  if (/\/openai$/.test(base)) return base + '/chat/completions'; // Gemini OpenAI-compat
+  if (/\/v\d+$/.test(base)) return base + '/chat/completions';
+  return base + '/v1/chat/completions';
+}
+
+function buildHeaders(endpoint: string, apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const isLocal = /localhost|127\.0\.0\.1|\[::1\]/.test(endpoint) || endpoint.includes('11434');
+  if (apiKey && !isLocal) headers['Authorization'] = `Bearer ${apiKey}`;
+  if (endpoint.includes('openrouter')) {
+    headers['HTTP-Referer'] = 'https://purple-ide.app';
+    headers['X-Title'] = 'Purple IDE';
+  }
+  return headers;
+}
+
+interface ChatOptions {
+  messages: { role: string; content: string }[];
+  apiKey: string;
+  model: string;
+  endpoint: string;
+  temperature?: number;
+  maxTokens?: number;
+}
+
+async function chatCompletion(opts: ChatOptions, signal: AbortSignal): Promise<{ content: string; usage?: any }> {
+  const url = resolveChatUrl(opts.endpoint);
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: buildHeaders(opts.endpoint, opts.apiKey),
+    body: JSON.stringify({
+      model: opts.model,
+      messages: opts.messages,
+      temperature: opts.temperature ?? 0.3,
+      stream: false,
+      ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
+    }),
+    signal,
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`HTTP ${res.status}${text ? `: ${text.slice(0, 300)}` : ''}`);
+  }
+  const data = await res.json();
+  return { content: data.choices?.[0]?.message?.content ?? '', usage: data.usage };
+}
+
+// ---------------------------------------------------------------------------
+// Window
+// ---------------------------------------------------------------------------
+
+function createWindow() {
+  mainWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    minWidth: 900,
+    minHeight: 600,
+    show: false,
+    title: 'Purple IDE',
+    backgroundColor: '#0d0a16',
+    ...(process.platform === 'darwin'
+      ? {
+          titleBarStyle: 'hiddenInset' as const,
+          trafficLightPosition: { x: 14, y: 12 },
+        }
+      : { frame: false }),
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.cjs'),
+      nodeIntegration: false,
+      contextIsolation: true,
+      spellcheck: false,
+    },
+  });
+
+  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+  mainWindow.once('ready-to-show', () => mainWindow?.show());
+  mainWindow.on('maximize', () => send('window-state-changed', true));
+  mainWindow.on('unmaximize', () => send('window-state-changed', false));
+  mainWindow.on('closed', () => { mainWindow = null; });
+
+  agentOrchestrator.setMainWindow(mainWindow);
+  ipcHandler.setWebContents(mainWindow.webContents);
+}
+
+function showAbout() {
+  const options = {
+    type: 'info' as const,
+    title: 'About Purple IDE',
+    message: 'Purple IDE',
+    detail: [
+      `Version ${app.getVersion()}`,
+      `Electron ${process.versions.electron}`,
+      `Chromium ${process.versions.chrome}`,
+      `Node.js ${process.versions.node}`,
+    ].join('\n'),
+    buttons: ['OK'],
+    defaultId: 0,
+  };
+  if (mainWindow) void dialog.showMessageBox(mainWindow, options);
+  else void dialog.showMessageBox(options);
+}
+
+function buildMenu() {
+  const isMac = process.platform === 'darwin';
+
+  // Menu accelerators are displayed but registered by the renderer, which owns
+  // workbench state. This avoids duplicate handling between native menus and
+  // the webContents keydown handler.
+  const command = (id: string, payload?: unknown) => () => send('menu-command', id, payload);
+  /** Menu labels and accelerators come from the shared command registry. */
+  const item = (id: string): Electron.MenuItemConstructorOptions => {
+    const definition = getCommand(id);
+    if (!definition) throw new Error(`Unknown command: ${id}`);
+    return {
+      label: definition.menuLabel ?? definition.label,
+      accelerator: definition.accelerator,
+      registerAccelerator: false,
+      click: command(id),
+    };
+  };
+  /** Menu-only entries that carry a payload (themes, editor actions). */
+  const payloadItem = (
+    label: string,
+    id: string,
+    payload: unknown,
+    accelerator?: string,
+  ): Electron.MenuItemConstructorOptions => ({
+    label,
+    accelerator,
+    registerAccelerator: false,
+    click: command(id, payload),
+  });
+
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'Purple IDE',
+      submenu: [
+        { label: 'About Purple IDE', click: showAbout },
+        { type: 'separator' },
+        ...(isMac
+          ? [
+              { role: 'services' as const },
+              { type: 'separator' as const },
+              { role: 'hide' as const },
+              { role: 'hideOthers' as const },
+              { role: 'unhide' as const },
+              { type: 'separator' as const },
+            ]
+          : [{ type: 'separator' as const }]),
+        { role: 'quit' as const, label: 'Quit Purple IDE' },
+      ],
+    },
+    {
+      label: 'File',
+      submenu: [
+        item('new-file'),
+        item('open-file'),
+        item('open-folder'),
+        { type: 'separator' },
+        item('save'),
+        item('save-as'),
+        item('save-all'),
+        { type: 'separator' },
+        item('close-editor'),
+        ...(!isMac ? [{ type: 'separator' as const }, { role: 'quit' as const }] : []),
+      ],
+    },
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' as const },
+        { role: 'redo' as const },
+        { type: 'separator' },
+        { role: 'cut' as const },
+        { role: 'copy' as const },
+        { role: 'paste' as const },
+        { role: 'selectAll' as const },
+      ],
+    },
+    {
+      label: 'Selection',
+      submenu: [
+        { label: 'Select All', role: 'selectAll' as const },
+        payloadItem('Expand Selection', 'editor-action', 'editor.action.smartSelect.expand', 'Shift+Alt+Right'),
+        payloadItem('Shrink Selection', 'editor-action', 'editor.action.smartSelect.shrink', 'Shift+Alt+Left'),
+        { type: 'separator' },
+        payloadItem('Add Cursor Above', 'editor-action', 'editor.action.insertCursorAbove', 'Alt+Up'),
+        payloadItem('Add Cursor Below', 'editor-action', 'editor.action.insertCursorBelow', 'Alt+Down'),
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        item('command-palette'),
+        item('quick-open'),
+        { type: 'separator' },
+        item('toggle-sidebar'),
+        item('toggle-panel'),
+        item('toggle-ai-chat'),
+        item('show-agents'),
+        item('toggle-terminal'),
+        { type: 'separator' },
+        {
+          label: 'Appearance',
+          submenu: [
+            payloadItem('Purple Dark', 'theme', 'purple-dark'),
+            payloadItem('Dark Modern', 'theme', 'dark-modern'),
+            payloadItem('Light Modern', 'theme', 'light-modern'),
+            payloadItem('High Contrast', 'theme', 'high-contrast'),
+            { type: 'separator' },
+            item('open-settings'),
+          ],
+        },
+        { type: 'separator' },
+        { role: 'togglefullscreen' as const },
+        { role: 'resetZoom' as const },
+        { role: 'zoomIn' as const },
+        { role: 'zoomOut' as const },
+      ],
+    },
+    {
+      label: 'Go',
+      submenu: [
+        item('go-back'),
+        item('go-forward'),
+        { type: 'separator' },
+        item('next-editor'),
+        item('previous-editor'),
+        { type: 'separator' },
+        item('focus-explorer'),
+        item('focus-search'),
+        item('focus-source-control'),
+      ],
+    },
+    {
+      label: 'Run',
+      submenu: [
+        item('run-file'),
+        { type: 'separator' },
+        item('show-output'),
+        item('show-problems'),
+      ],
+    },
+    {
+      label: 'Terminal',
+      submenu: [
+        item('new-terminal'),
+        item('toggle-terminal'),
+        { type: 'separator' },
+        item('show-output'),
+      ],
+    },
+    {
+      label: 'Help',
+      submenu: [
+        item('command-palette'),
+        item('keyboard-shortcuts'),
+        { type: 'separator' },
+        { label: 'Check for Updates…', click: () => { void checkForUpdates(true); } },
+        { type: 'separator' },
+        { label: 'About Purple IDE', click: showAbout },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+// ---------------------------------------------------------------------------
+// File watcher
+// ---------------------------------------------------------------------------
+
+const WATCH_IGNORE = /[/\\](node_modules|\.git|dist|build|__pycache__)([/\\]|$)|\.DS_Store|[/\\]\.agent([/\\]|$)/;
+
+function startWatcher(root: string) {
+  stopWatcher();
+  try {
+    watcher = fs.watch(root, { recursive: true }, (_event, filename) => {
+      if (!filename) return;
+      const full = path.join(root, filename);
+      if (WATCH_IGNORE.test(full)) return;
+      if (!fs.existsSync(full) || fs.statSync(full).isDirectory()) return;
+      let content = '';
+      try { content = fs.readFileSync(full, 'utf-8'); } catch { return; }
+      send('file-changed', full);
+      send('workspace:file-changed', { path: full, content });
+    });
+  } catch (err) {
+    console.error('Watcher failed:', err);
+  }
+}
+
+function stopWatcher() {
+  if (watcher) {
+    try { watcher.close(); } catch {}
+    watcher = null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// File & directory IPC
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('open-file', async (_e, filePath: string) => {
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    return { success: true, content };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('save-file', async (_e, filePath: string, content: string) => {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, content, 'utf-8');
+    const relativePath = workspaceRoot && filePath.startsWith(workspaceRoot)
+      ? path.relative(workspaceRoot, filePath) : filePath;
+    send('file-written', { relativePath, resolvedPath: filePath, content });
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('get-directory', async (_e, dirPath: string) => {
+  try {
+    return { success: true, files: listEntries(dirPath) };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('select-directory', async () => {
+  if (!mainWindow) return { success: false, error: 'No window' };
+  const result = await dialog.showOpenDialog(mainWindow, { properties: ['openDirectory'] });
+  if (result.canceled || result.filePaths.length === 0) return { success: false, error: 'Canceled' };
+  const selected = result.filePaths[0];
+  const isNewRoot = selected !== workspaceRoot;
+  workspaceRoot = selected;
+  memoryManager.setWorkspace(selected);
+  if (isNewRoot) startWatcher(selected);
+  return { success: true, path: selected };
+});
+
+ipcMain.handle('select-file', async () => {
+  if (!mainWindow) return { success: false, error: 'No window' };
+  const result = await dialog.showOpenDialog(mainWindow, {
+    properties: ['openFile'],
+    defaultPath: workspaceRoot || undefined,
+  });
+  if (result.canceled || result.filePaths.length === 0) return { success: false, error: 'Canceled' };
+  return { success: true, path: result.filePaths[0] };
+});
+
+ipcMain.handle('save-file-as', async (_e, suggestedPath: string, content: string) => {
+  if (!mainWindow) return { success: false, error: 'No window' };
+  const defaultPath = suggestedPath && !suggestedPath.startsWith('untitled:')
+    ? suggestedPath
+    : path.join(workspaceRoot || os.homedir(), suggestedPath?.replace('untitled:', 'Untitled-') || 'Untitled');
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: 'Save As',
+    defaultPath,
+    properties: ['createDirectory', 'showOverwriteConfirmation'],
+  });
+  if (result.canceled || !result.filePath) return { success: false, error: 'Canceled' };
+  try {
+    fs.mkdirSync(path.dirname(result.filePath), { recursive: true });
+    fs.writeFileSync(result.filePath, content, 'utf-8');
+    send('file-written', {
+      relativePath: workspaceRoot && result.filePath.startsWith(workspaceRoot)
+        ? path.relative(workspaceRoot, result.filePath)
+        : result.filePath,
+      resolvedPath: result.filePath,
+      content,
+    });
+    return { success: true, path: result.filePath };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('confirm-unsaved', async (_e, fileName: string) => {
+  if (!mainWindow) return { success: false, error: 'No window' };
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    title: 'Unsaved Changes',
+    message: `Do you want to save the changes you made to ${fileName}?`,
+    detail: "Your changes will be lost if you don't save them.",
+    buttons: ['Save', "Don't Save", 'Cancel'],
+    defaultId: 0,
+    cancelId: 2,
+    noLink: true,
+  });
+  const choice = result.response === 0 ? 'save' : result.response === 1 ? 'discard' : 'cancel';
+  return { success: true, choice };
+});
+
+ipcMain.handle('get-app-info', () => ({
+  success: true,
+  name: app.getName(),
+  version: app.getVersion(),
+  electron: process.versions.electron,
+  chrome: process.versions.chrome,
+  node: process.versions.node,
+  platform: process.platform,
+}));
+
+ipcMain.handle('show-about', () => {
+  showAbout();
+  return { success: true };
+});
+
+ipcMain.handle('create-file', async (_e, parentDir: string, name: string) => {
+  try {
+    const filePath = path.join(parentDir, name);
+    if (fs.existsSync(filePath)) return { success: false, error: 'File already exists' };
+    fs.writeFileSync(filePath, '', 'utf-8');
+    return { success: true, path: filePath };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('create-directory', async (_e, parentDir: string, name: string) => {
+  try {
+    const dirPath = path.join(parentDir, name);
+    fs.mkdirSync(dirPath, { recursive: true });
+    return { success: true, path: dirPath };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('delete-entry', async (_e, targetPath: string) => {
+  try {
+    if (!isPathSafe(targetPath)) return { success: false, error: 'Path is outside workspace' };
+    const stat = fs.statSync(targetPath);
+    if (stat.isDirectory()) fs.rmSync(targetPath, { recursive: true, force: true });
+    else fs.unlinkSync(targetPath);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('rename-entry', async (_e, oldPath: string, newName: string) => {
+  try {
+    const newPath = path.join(path.dirname(oldPath), newName);
+    fs.renameSync(oldPath, newPath);
+    return { success: true, path: newPath };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('copy-entry', async (_e, sourcePath: string, destDir: string) => {
+  try {
+    const dest = path.join(destDir, path.basename(sourcePath));
+    fs.cpSync(sourcePath, dest, { recursive: true });
+    return { success: true, path: dest };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('move-entry', async (_e, sourcePath: string, destDir: string) => {
+  try {
+    const dest = path.join(destDir, path.basename(sourcePath));
+    fs.renameSync(sourcePath, dest);
+    return { success: true, path: dest };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Window controls
+// ---------------------------------------------------------------------------
+
+ipcMain.on('window-minimize', () => mainWindow?.minimize());
+ipcMain.on('window-maximize', () => {
+  if (mainWindow?.isMaximized()) mainWindow.unmaximize();
+  else mainWindow?.maximize();
+});
+ipcMain.on('window-close', () => mainWindow?.close());
+ipcMain.handle('window-is-maximized', () => mainWindow?.isMaximized() ?? false);
+
+// ---------------------------------------------------------------------------
+// Platform / search / recent files
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('get-platform', () => ({ platform: process.platform }));
+
+ipcMain.handle('search-files', async (_e, rootDir: string, query: string) => {
+  try {
+    const results: string[] = [];
+    const walk = (dir: string, depth: number) => {
+      if (depth > 6 || results.length > 200) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full, depth + 1);
+        else if (entry.name.toLowerCase().includes(query.toLowerCase())) results.push(full);
+      }
+    };
+    walk(rootDir, 0);
+    return { success: true, files: results };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('search-in-files', async (_e, rootDir: string, query: string) => {
+  try {
+    const results: { file: string; line: number; text: string }[] = [];
+    const walk = (dir: string, depth: number) => {
+      if (depth > 6 || results.length > 300) return;
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { walk(full, depth + 1); continue; }
+        if (results.length >= 300) return;
+        try {
+          const content = fs.readFileSync(full, 'utf-8');
+          const lines = content.split('\n');
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].includes(query)) {
+              results.push({ file: full, line: i + 1, text: lines[i].trim().slice(0, 200) });
+              if (results.length >= 300) return;
+            }
+          }
+        } catch {}
+      }
+    };
+    walk(rootDir, 0);
+    return { success: true, results };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+interface RecentFile { path: string; name: string; timestamp: number }
+
+ipcMain.handle('get-recent-files', () => ({
+  success: true,
+  files: readJsonStore<RecentFile[]>('recent-files.json', []),
+}));
+
+ipcMain.handle('add-recent-file', (_e, filePath: string) => {
+  const files = readJsonStore<RecentFile[]>('recent-files.json', []);
+  const next = [
+    { path: filePath, name: path.basename(filePath), timestamp: Date.now() },
+    ...files.filter(f => f.path !== filePath),
+  ].slice(0, 20);
+  writeJsonStore('recent-files.json', next);
+  return { success: true };
+});
+
+ipcMain.handle('clear-recent-files', () => {
+  writeJsonStore('recent-files.json', []);
+  return { success: true };
+});
+
+// ---------------------------------------------------------------------------
+// Code runner
+// ---------------------------------------------------------------------------
+
+const RUNNERS: Record<string, { cmd: (p: string) => string }> = {
+  js: { cmd: p => `node "${p}"` },
+  ts: { cmd: p => `npx --yes tsx "${p}"` },
+  py: { cmd: p => `python3 "${p}"` },
+  c: { cmd: p => `gcc "${p}" -o /tmp/purple-run-out && /tmp/purple-run-out` },
+  cpp: { cmd: p => `g++ "${p}" -o /tmp/purple-run-out && /tmp/purple-run-out` },
+  cc: { cmd: p => `g++ "${p}" -o /tmp/purple-run-out && /tmp/purple-run-out` },
+  cxx: { cmd: p => `g++ "${p}" -o /tmp/purple-run-out && /tmp/purple-run-out` },
+  go: { cmd: p => `go run "${p}"` },
+  rs: { cmd: p => `rustc "${p}" -o /tmp/purple-run-out && /tmp/purple-run-out` },
+  rb: { cmd: p => `ruby "${p}"` },
+  sh: { cmd: p => `bash "${p}"` },
+  java: { cmd: p => `java "${p}"` },
+};
+
+ipcMain.handle('run-code', async (_e, filePath: string) => {
+  try {
+    const ext = filePath.split('.').pop()?.toLowerCase() || '';
+    const runner = RUNNERS[ext];
+    if (!runner) return { success: false, error: `No runner for .${ext} files` };
+    const command = runner.cmd(filePath);
+    const result = await runShellCommand(command, path.dirname(filePath), 30000);
+    return {
+      success: true,
+      stdout: result.stdout,
+      stderr: result.stderr,
+      exitCode: result.exitCode,
+      command,
+      attemptedCommands: [command],
+    };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('gitCommand', async (_e, command: string, cwd: string) => {
+  try {
+    const root = cwd || workspaceRoot || '';
+    if (!root) return { success: false, error: 'No workspace' };
+    const result = await runShellCommand(command, root, 120000);
+    return { success: true, stdout: result.stdout, stderr: result.stderr, exitCode: result.exitCode };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AI chat (single agent) — streaming + non-streaming with abort
+// ---------------------------------------------------------------------------
+
+let chatAbort: AbortController | null = null;
+
+ipcMain.handle('ai-chat', async (_e, messages: { role: string; content: string }[], apiKey: string, model: string, endpoint: string, _rootFolder?: string, _activeFile?: string, temperature?: number) => {
+  chatAbort = new AbortController();
+  try {
+    const result = await chatCompletion({ messages, apiKey, model, endpoint, temperature }, chatAbort.signal);
+    return { success: true, message: { role: 'assistant', content: result.content } };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('ai-chat-stream', async (_e, messages: { role: string; content: string }[], apiKey: string, model: string, endpoint: string, _rootFolder?: string, _activeFile?: string, temperature?: number) => {
+  chatAbort = new AbortController();
+  const signal = chatAbort.signal;
+  let full = '';
+  try {
+    const url = resolveChatUrl(endpoint);
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: buildHeaders(endpoint, apiKey),
+      body: JSON.stringify({ model, messages, temperature: temperature ?? 0.3, stream: true }),
+      signal,
+    });
+    if (!res.ok) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status}${text ? `: ${text.slice(0, 300)}` : ''}`);
+    }
+    if (!res.body) throw new Error('No response body');
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const payload = trimmed.slice(5).trim();
+        if (payload === '[DONE]') continue;
+        try {
+          const json = JSON.parse(payload);
+          const delta: string = json.choices?.[0]?.delta?.content ?? json.choices?.[0]?.text ?? '';
+          if (delta) {
+            full += delta;
+            send('ai-stream-chunk', delta);
+          }
+        } catch {}
+      }
+    }
+    send('ai-stream-done', full);
+    return { success: true, message: { role: 'assistant', content: full } };
+  } catch (error) {
+    const err = error as Error;
+    const aborted = err.name === 'AbortError';
+    send('ai-stream-done', full);
+    if (aborted) return { success: true, message: { role: 'assistant', content: full }, aborted: true };
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.on('ai-chat-abort', () => {
+  try { chatAbort?.abort(); } catch {}
+});
+
+// ---------------------------------------------------------------------------
+// AI tool execution (single agent tool loop)
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('ai-execute-tool', async (_e, toolCall: { tool: string; arguments: Record<string, any>; rootFolder: string | null }) => {
+  try {
+    const root = toolCall.rootFolder || workspaceRoot || '';
+    const result = await executeTool({ tool: toolCall.tool, arguments: toolCall.arguments } as any, root);
+    if (result.success && (toolCall.tool === 'write_file' || toolCall.tool === 'edit_file') && result.path) {
+      send('ai:tool-diff', {
+        path: result.path,
+        diff: result.diff || [],
+        type: toolCall.tool === 'write_file' && result.oldContent === undefined ? 'created' : 'edited',
+      });
+      send('file-written', {
+        relativePath: workspaceRoot && result.path.startsWith(workspaceRoot) ? path.relative(workspaceRoot, result.path) : result.path,
+        resolvedPath: result.path,
+        content: fs.existsSync(result.path) ? fs.readFileSync(result.path, 'utf-8') : '',
+      });
+    }
+    if (result.success && toolCall.tool === 'run_code') {
+      send('ai:tool-run', {
+        stdout: result.stdout || '',
+        stderr: result.stderr || '',
+        exitCode: result.exitCode ?? null,
+        command: toolCall.arguments?.command || '',
+      });
+    }
+    return { success: true, result };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+// ---------------------------------------------------------------------------
+// AI sessions (main-process persistent store)
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('ai-list-sessions', () => {
+  const store = readJsonStore<{ sessions: Record<string, any> }>('ai-sessions.json', { sessions: {} });
+  const summaries = Object.values(store.sessions).map((s: any) => ({
+    id: s.id, name: s.name, model: s.model, tokensIn: s.tokensIn || 0, tokensOut: s.tokensOut || 0,
+    createdAt: s.createdAt, updatedAt: s.updatedAt, messageCount: (s.messages || []).length,
+  })).sort((a: any, b: any) => b.updatedAt - a.updatedAt);
+  return { success: true, sessions: summaries };
+});
+
+ipcMain.handle('ai-save-session', (_e, session: any) => {
+  const store = readJsonStore<{ sessions: Record<string, any> }>('ai-sessions.json', { sessions: {} });
+  store.sessions[session.id] = { ...session, updatedAt: Date.now() };
+  writeJsonStore('ai-sessions.json', store);
+  return { success: true };
+});
+
+ipcMain.handle('ai-load-session', (_e, id: string) => {
+  const store = readJsonStore<{ sessions: Record<string, any> }>('ai-sessions.json', { sessions: {} });
+  const session = store.sessions[id];
+  return session ? { success: true, session } : { success: false, error: 'Session not found' };
+});
+
+ipcMain.handle('ai-delete-session', (_e, id: string) => {
+  const store = readJsonStore<{ sessions: Record<string, any> }>('ai-sessions.json', { sessions: {} });
+  delete store.sessions[id];
+  writeJsonStore('ai-sessions.json', store);
+  return { success: true };
+});
+
+// ---------------------------------------------------------------------------
+// AI persistent memory store
+// ---------------------------------------------------------------------------
+
+interface MemoryEntry {
+  id: string; type: string; content: string; tags: string[];
+  projectPath: string | null; source: string; createdAt: number; updatedAt: number;
+}
+
+const memoryFile = 'ai-memory.json';
+
+ipcMain.handle('memory-list', (_e, projectPath?: string) => {
+  const entries = readJsonStore<MemoryEntry[]>(memoryFile, []);
+  const filtered = projectPath ? entries.filter(m => !m.projectPath || m.projectPath === projectPath) : entries;
+  return { success: true, memories: filtered.sort((a, b) => b.updatedAt - a.updatedAt) };
+});
+
+ipcMain.handle('memory-add', (_e, entry: Partial<MemoryEntry>) => {
+  const entries = readJsonStore<MemoryEntry[]>(memoryFile, []);
+  const now = Date.now();
+  const full: MemoryEntry = {
+    id: `mem-${now}-${Math.random().toString(36).slice(2, 8)}`,
+    type: entry.type || 'fact',
+    content: entry.content || '',
+    tags: entry.tags || [],
+    projectPath: entry.projectPath ?? null,
+    source: entry.source || 'manual',
+    createdAt: now,
+    updatedAt: now,
+  };
+  entries.push(full);
+  writeJsonStore(memoryFile, entries);
+  return { success: true, memory: full };
+});
+
+ipcMain.handle('memory-update', (_e, id: string, patch: Partial<MemoryEntry>) => {
+  const entries = readJsonStore<MemoryEntry[]>(memoryFile, []);
+  const idx = entries.findIndex(m => m.id === id);
+  if (idx === -1) return { success: false, error: 'Not found' };
+  entries[idx] = { ...entries[idx], ...patch, id, updatedAt: Date.now() };
+  writeJsonStore(memoryFile, entries);
+  return { success: true, memory: entries[idx] };
+});
+
+ipcMain.handle('memory-delete', (_e, id: string) => {
+  const entries = readJsonStore<MemoryEntry[]>(memoryFile, []);
+  writeJsonStore(memoryFile, entries.filter(m => m.id !== id));
+  return { success: true };
+});
+
+ipcMain.handle('memory-search', (_e, query: string, projectPath?: string, limit?: number) => {
+  const entries = readJsonStore<MemoryEntry[]>(memoryFile, []);
+  const q = query.toLowerCase();
+  const scored = entries
+    .filter(m => !projectPath || !m.projectPath || m.projectPath === projectPath)
+    .map(m => {
+      let score = 0;
+      if (m.content.toLowerCase().includes(q)) score += 3;
+      for (const tag of m.tags) if (tag.toLowerCase().includes(q)) score += 2;
+      const words = q.split(/\s+/).filter(Boolean);
+      for (const w of words) if (m.content.toLowerCase().includes(w)) score += 1;
+      return { m, score };
+    })
+    .filter(x => x.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit || 10);
+  return { success: true, memories: scored.map(x => x.m) };
+});
+
+ipcMain.handle('memory-upsert-session-summary', (_e, summary: { sessionId: string; content: string; tags: string[]; projectPath?: string }) => {
+  const entries = readJsonStore<MemoryEntry[]>(memoryFile, []);
+  const sessionTag = `session:${summary.sessionId}`;
+  const idx = entries.findIndex(m => m.tags.includes(sessionTag) && (!summary.projectPath || m.projectPath === summary.projectPath));
+  const now = Date.now();
+  if (idx >= 0) {
+    entries[idx] = { ...entries[idx], content: summary.content, tags: Array.from(new Set([...summary.tags, sessionTag])), updatedAt: now };
+    writeJsonStore(memoryFile, entries);
+    return { success: true, memory: entries[idx] };
+  }
+  const full: MemoryEntry = {
+    id: `mem-${now}-${Math.random().toString(36).slice(2, 8)}`,
+    type: 'summary',
+    content: summary.content,
+    tags: [...(summary.tags || []), sessionTag],
+    projectPath: summary.projectPath ?? null,
+    source: 'auto-capture',
+    createdAt: now,
+    updatedAt: now,
+  };
+  entries.push(full);
+  writeJsonStore(memoryFile, entries);
+  return { success: true, memory: full };
+});
+
+// ---------------------------------------------------------------------------
+// Model providers (ollama / local)
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('ollama-list-models', async () => {
+  try {
+    const res = await fetch('http://localhost:11434/api/tags', { signal: AbortSignal.timeout(4000) });
+    const data = await res.json();
+    return { success: true, models: (data.models || []).map((m: any) => m.name) };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('local-list-models', async (_e, endpoint: string) => {
+  try {
+    const res = await fetch(`${(endpoint || '').replace(/\/+$/, '')}/v1/models`, { signal: AbortSignal.timeout(4000) });
+    const data = await res.json();
+    return { success: true, models: (data.data || []).map((m: any) => m.id) };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+// ---------------------------------------------------------------------------
+// MCP (HTTP transport client)
+// ---------------------------------------------------------------------------
+
+interface MCPServerConfig {
+  id: string; name: string; type: string;
+  command?: string; args?: string[]; url?: string; env?: Record<string, string>;
+}
+
+const mcpFile = 'mcp-servers.json';
+
+function mcpUrl(config: MCPServerConfig): string {
+  return (config.url || 'http://localhost:3999').replace(/\/+$/, '');
+}
+
+async function mcpFetch(url: string, body?: unknown, timeoutMs = 6000): Promise<any> {
+  const res = await fetch(url, {
+    method: body ? 'POST' : 'GET',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return text; }
+}
+
+ipcMain.handle('mcp-list-servers', () => ({
+  success: true, servers: readJsonStore<MCPServerConfig[]>(mcpFile, []),
+}));
+
+ipcMain.handle('mcp-connect', async (_e, config: MCPServerConfig) => {
+  try {
+    const servers = readJsonStore<MCPServerConfig[]>(mcpFile, []);
+    const next = [...servers.filter(s => s.id !== config.id), config];
+    writeJsonStore(mcpFile, next);
+    await mcpFetch(`${mcpUrl(config)}/health`);
+    return { success: true, connected: true };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('mcp-disconnect', (_e, serverId: string) => {
+  const servers = readJsonStore<MCPServerConfig[]>(mcpFile, []);
+  writeJsonStore(mcpFile, servers.filter(s => s.id !== serverId));
+  return { success: true };
+});
+
+ipcMain.handle('mcp-list-tools', async (_e, serverId: string) => {
+  try {
+    const servers = readJsonStore<MCPServerConfig[]>(mcpFile, []);
+    const config = servers.find(s => s.id === serverId);
+    if (!config) return { success: true, tools: [] };
+    const data = await mcpFetch(`${mcpUrl(config)}/tools`).catch(() => null);
+    const tools = Array.isArray(data?.tools) ? data.tools : [];
+    return { success: true, tools };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('mcp-call-tool', async (_e, toolName: string, args: Record<string, any>, _rootFolder?: string, serverId?: string) => {
+  try {
+    const servers = readJsonStore<MCPServerConfig[]>(mcpFile, []);
+    const config = serverId ? servers.find(s => s.id === serverId) : servers[0];
+    if (!config) return { success: false, error: 'No MCP server configured' };
+    const data = await mcpFetch(`${mcpUrl(config)}/mcp/query`, { tool: toolName, args, query: args?.query || toolName });
+    return { success: true, result: data?.result ?? data };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('mcp-list-resources', async (_e, serverId: string) => {
+  try {
+    const servers = readJsonStore<MCPServerConfig[]>(mcpFile, []);
+    const config = servers.find(s => s.id === serverId);
+    if (!config) return { success: true, resources: [] };
+    const data = await mcpFetch(`${mcpUrl(config)}/resources`).catch(() => null);
+    return { success: true, resources: Array.isArray(data?.resources) ? data.resources : [] };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('mcp-read-resource', async (_e, serverId: string, uri: string) => {
+  try {
+    const servers = readJsonStore<MCPServerConfig[]>(mcpFile, []);
+    const config = servers.find(s => s.id === serverId);
+    if (!config) return { success: false, error: 'Unknown server' };
+    const data = await mcpFetch(`${mcpUrl(config)}/resources/read?uri=${encodeURIComponent(uri)}`);
+    return { success: true, contents: [{ uri, mimeType: 'text/plain', text: typeof data === 'string' ? data : JSON.stringify(data) }] };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('mcp-list-prompts', async () => ({ success: true, prompts: [] }));
+ipcMain.handle('mcp-get-prompt', async () => ({ success: false, error: 'Prompts not supported by this MCP transport' }));
+
+// ---------------------------------------------------------------------------
+// Terminal (node-pty, degrades gracefully if binding unavailable)
+// ---------------------------------------------------------------------------
+
+interface TerminalSession {
+  write: (data: string) => void;
+  resize: (cols: number, rows: number) => void;
+  kill: () => void;
+  buffer: string[];
+  exited: boolean;
+}
+const terminals = new Map<string, TerminalSession>();
+let ptyModule: any = null;
+
+function getPty(): any {
+  if (ptyModule !== null) return ptyModule;
+  try { ptyModule = require('node-pty'); } catch { ptyModule = false; }
+  return ptyModule;
+}
+
+const MAX_TERMINAL_LINES = 5000;
+
+ipcMain.handle('terminal:create', async (_e, id: string, cwd?: string) => {
+  const pty = getPty();
+  if (!pty) return { success: false, error: 'node-pty unavailable' };
+  try {
+    const shell = process.platform === 'win32' ? 'powershell.exe' : process.env.SHELL || '/bin/zsh';
+    const term = pty.spawn(shell, [], {
+      name: 'xterm-256color',
+      cols: 80, rows: 24,
+      cwd: cwd || os.homedir(),
+      env: { ...process.env, TERM: 'xterm-256color' } as Record<string, string>,
+    });
+    const session: TerminalSession = {
+      write: (data: string) => term.write(data),
+      resize: (cols: number, rows: number) => { try { term.resize(cols, rows); } catch {} },
+      kill: () => { try { term.kill(); } catch {} },
+      buffer: [],
+      exited: false,
+    };
+    term.onData((data: string) => {
+      session.buffer.push(data);
+      if (session.buffer.length > MAX_TERMINAL_LINES) session.buffer.shift();
+      send('terminal:data', id, data);
+    });
+    term.onExit(({ exitCode }: { exitCode: number }) => {
+      session.exited = true;
+      terminals.delete(id);
+      send('terminal:exit', id, exitCode);
+    });
+    terminals.set(id, session);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('terminal:write', (_e, id: string, data: string) => {
+  terminals.get(id)?.write(data);
+  return { success: true };
+});
+
+ipcMain.handle('terminal:resize', (_e, id: string, cols: number, rows: number) => {
+  terminals.get(id)?.resize(cols, rows);
+  return { success: true };
+});
+
+ipcMain.handle('terminal:kill', (_e, id: string) => {
+  terminals.get(id)?.kill();
+  return { success: true };
+});
+
+ipcMain.handle('terminal:list', () => Array.from(terminals.keys()));
+
+ipcMain.handle('terminal:getOutput', (_e, id: string, maxLines?: number) => {
+  const session = terminals.get(id);
+  if (!session) return { success: false, error: 'Terminal not found' };
+  const lines = session.buffer.join('');
+  if (!maxLines) return { success: true, output: lines };
+  return { success: true, output: lines.split('\n').slice(-maxLines).join('\n') };
+});
+
+// ---------------------------------------------------------------------------
+// Secure generic key-value storage (safeStorage)
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('secure-store', async (_e, key: string, value: string) => {
+  try {
+    const { safeStorage } = await import('electron');
+    const store = readJsonStore<Record<string, string>>('secure-store.json', {});
+    if (safeStorage.isEncryptionAvailable()) {
+      store[key] = safeStorage.encryptString(value).toString('base64');
+    } else {
+      store[key] = Buffer.from(value, 'utf-8').toString('base64');
+    }
+    writeJsonStore('secure-store.json', store);
+    return { success: true };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('secure-get', async (_e, key: string) => {
+  try {
+    const { safeStorage } = await import('electron');
+    const store = readJsonStore<Record<string, string>>('secure-store.json', {});
+    const raw = store[key];
+    if (!raw) return { success: true, value: null };
+    if (safeStorage.isEncryptionAvailable()) {
+      return { success: true, value: safeStorage.decryptString(Buffer.from(raw, 'base64')) };
+    }
+    return { success: true, value: Buffer.from(raw, 'base64').toString('utf-8') };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Multi-agent orchestrator
+// ---------------------------------------------------------------------------
+
+ipcMain.handle('agent:plan', async (_e, goal: string, workspaceRootPath: string) => {
+  try {
+    workspaceRoot = workspaceRootPath || workspaceRoot;
+    const tasks = await agentOrchestrator.plan(goal, workspaceRootPath);
+    return { success: true, tasks };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('agent:execute', async () => {
+  agentOrchestrator.execute();
+  return { success: true };
+});
+
+ipcMain.handle('agent:stop', async () => {
+  agentOrchestrator.stop();
+  return { success: true };
+});
+
+ipcMain.handle('agent:get-tasks', () => ({ success: true, tasks: agentOrchestrator.getTasks() }));
+
+ipcMain.handle('agent:set-key', async (_e, providerId: string, key: string) => {
+  modelRouter.setKey(providerId, key);
+  return { success: true };
+});
+
+ipcMain.handle('agent:get-providers', () => {
+  const providers = modelRouter.getProviders().map(p => ({
+    id: p.id, name: p.name, model: p.model, priority: p.priority,
+    hasKey: !!modelRouter.getKey(p.id), available: modelRouter.isAvailable(p.id),
+  }));
+  return { success: true, providers };
+});
+
+ipcMain.handle('agent:get-memory', (_e, root: string) => {
+  try {
+    memoryManager.setWorkspace(root);
+    return { success: true, memory: memoryManager.readMemory() };
+  } catch (error) {
+    return { success: false, error: (error as Error).message };
+  }
+});
+
+ipcMain.handle('agent:get-status', () => ({ success: true, status: agentOrchestrator.getStatus() }));
+
+ipcMain.handle('agent:set-mode', (_e, mode: string) => {
+  const valid = ['vibe', 'plan', 'ask', 'edit', 'review', 'debug'];
+  if (!valid.includes(mode)) return { success: false, error: `Invalid mode: ${mode}` };
+  agentOrchestrator.setMode(mode as any);
+  return { success: true, mode };
+});
+
+ipcMain.handle('agent:approval', (_e, requestId: string, approved: boolean) => {
+  agentOrchestrator.resolveApproval(requestId, approved);
+  return { success: true };
+});
+
+// ---------------------------------------------------------------------------
+// App lifecycle
+// ---------------------------------------------------------------------------
+
+app.whenReady().then(() => {
+  configureAutoUpdater();
+  buildMenu();
+  createWindow();
+  app.setAboutPanelOptions({
+    applicationName: 'Purple IDE',
+    applicationVersion: app.getVersion(),
+    version: process.versions.electron,
+  });
+  // Background check on launch; failures stay silent so offline users are unaffected.
+  if (updatesSupported()) void checkForUpdates(false);
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+  });
+});
+
+app.on('window-all-closed', () => {
+  stopWatcher();
+  for (const [, session] of terminals) session.kill();
+  if (process.platform !== 'darwin') app.quit();
+});
+
+app.on('web-contents-created', (_e, contents) => {
+  contents.setWindowOpenHandler(({ url }) => {
+    shell.openExternal(url);
+    return { action: 'deny' };
+  });
+});
