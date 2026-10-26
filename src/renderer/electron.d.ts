@@ -98,6 +98,7 @@ export interface ElectronAPI {
   selectFile: () => Promise<SelectFileResult | ErrorResult>;
   saveFileAs: (suggestedPath: string, content: string) => Promise<SaveFileAsResult | ErrorResult>;
   confirmUnsaved: (fileName: string) => Promise<ConfirmUnsavedResult | ErrorResult>;
+  reportDirtyState: (count: number) => void;
   getAppInfo: () => Promise<AppInfoResult>;
   showAbout: () => Promise<SuccessResult>;
   createFile: (parentDir: string, name: string) => Promise<SuccessResult | ErrorResult>;

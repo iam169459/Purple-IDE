@@ -94,6 +94,13 @@ const WorkbenchShell: React.FC = () => {
 
   const editorRef = useRef<EditorHandle>(null);
 
+  // Let the main process know when unsaved work exists so a required
+  // (critical) update is never allowed to restart the app mid-edit.
+  useEffect(() => {
+    const dirtyCount = session.files.filter((file) => file.isDirty).length;
+    window.electronAPI.reportDirtyState(dirtyCount);
+  }, [session.files]);
+
   const updateSettings = useCallback((patch: Partial<WorkbenchSettings>) => {
     setSettings((previous) => ({ ...previous, ...patch }));
   }, []);

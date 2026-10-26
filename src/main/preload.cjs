@@ -8,6 +8,7 @@ const api = {
   selectFile: () => ipcRenderer.invoke('select-file'),
   saveFileAs: (suggestedPath, content) => ipcRenderer.invoke('save-file-as', suggestedPath, content),
   confirmUnsaved: (fileName) => ipcRenderer.invoke('confirm-unsaved', fileName),
+  reportDirtyState: (count) => ipcRenderer.send('app:dirty-state', count),
   getAppInfo: () => ipcRenderer.invoke('get-app-info'),
   showAbout: () => ipcRenderer.invoke('show-about'),
   createFile: (parentDir, name) => ipcRenderer.invoke('create-file', parentDir, name),

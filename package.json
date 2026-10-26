@@ -11,7 +11,8 @@
     "dev": "npm run build && node scripts/start-electron.mjs",
     "build": "npm run build:react && npm run build:electron",
     "build:react": "vite build",
-    "build:electron": "tsc && cp src/main/preload.cjs dist/main/",
+    "build:electron": "tsc && node scripts/copy-preload.mjs",
+    "version:manifest": "node scripts/build-version-manifest.mjs",
     "start": "npm run build && node scripts/start-electron.mjs",
     "pack": "electron-builder --dir",
     "dist": "npm run build && electron-builder",
@@ -110,7 +111,11 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "artifactName": "Purple-IDE-${version}-win-x64-setup.${ext}"
+    },
+    "portable": {
+      "artifactName": "Purple-IDE-${version}-win-x64-portable.${ext}"
     }
   },
   "dependencies": {

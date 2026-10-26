@@ -1,7 +1,13 @@
 node_modules/
 dist/
-build/
 out/
+
+# Build resources: keep the icons electron-builder needs in CI, ignore the rest.
+build/*
+!build/icon.icns
+!build/icon.png
+!build/icons/
+!build/icons/**
 .DS_Store
 .vscode/
 .env
